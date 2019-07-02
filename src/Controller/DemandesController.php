@@ -4,11 +4,15 @@ namespace App\Controller;
 
 use App\Entity\Categories;
 use App\Entity\Demandes;
+use App\Entity\Vote;
 use App\Form\DemandesType;
 use App\Repository\DemandesRepository;
+use App\Repository\VoteRepository;
 use DateInterval;
 use DateTime;
+use App\Service\VoteService;
 use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\ORM\EntityManagerInterface;
 use Faker\Test\Provider\DateTimeTest;
 use phpDocumentor\Reflection\DocBlock\Serializer;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -17,21 +21,99 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Component\Serializer\SerializerInterface;
+use App\Repository\CategoriesRepository;
 
 /**
  * @Route("/demandes")
  */
 class DemandesController extends AbstractController
 {
-    /**
-     * @Route("/", name="demandes_index", methods={"GET"})
-     */
-    public function index(DemandesRepository $demandesRepository): Response
+    private $categories;
+
+    public function __construct(CategoriesRepository $categoriesRepository)
     {
+        $this->categories = $categoriesRepository->findAll();
+    }
+
+    /**
+     * @Route("/ouvertes", name="demandes_ouvertes", methods={"GET"})
+     */
+    public function ouvertes(DemandesRepository $demandesRepository, VoteService $voteService): Response
+    {
+        $demandes = $demandesRepository->findBy(['isOuverte' => 'True']);
+        $countStatus = $voteService->countVote($demandes);
+        $pourcentageVotes = $voteService->pourcentageVote($demandes);
+
         return $this->render('demandes/index.html.twig', [
-            'demandes' => $demandesRepository->findAll(),
+            'demandes' => $demandes,
+            'countStatus'=> $countStatus,
+            'pourcentageVotes' => $pourcentageVotes,
+            'categories' => $this->categories
         ]);
     }
+
+    /**
+     * @Route("/validees", name="demandes_validees", methods={"GET"})
+     */
+    public function validees(DemandesRepository $demandesRepository, VoteService $voteService): Response
+    {
+        $demandes = $demandesRepository->findBy(['isOuverte' => true, 'isValide' => true]);
+        $successed = $voteService->isSuccessed($demandes, true);
+        $countStatus = $voteService->countVote($demandes);
+        $pourcentageVotes = $voteService->pourcentageVote($demandes);
+        return $this->render('demandes/index.html.twig', [
+            'demandes' => $successed,
+            'countStatus'=> $countStatus,
+            'pourcentageVotes' => $pourcentageVotes,
+            'categories' => $this->categories
+        ]);
+    }
+
+    /**
+     * @Route("/rejetees", name="demandes_rejetees", methods={"GET"})
+     */
+    public function rejetees(DemandesRepository $demandesRepository, VoteService $voteService): Response
+    {
+        $demandes = $demandesRepository->findBy(['isOuverte' => true, 'isValide' => true]);
+        $failed = $voteService->isSuccessed($demandes, false);
+        $countStatus = $voteService->countVote($demandes);
+        $pourcentageVotes = $voteService->pourcentageVote($demandes);
+        return $this->render('demandes/index.html.twig', [
+            'demandes' => $failed,
+            'countStatus'=> $countStatus,
+            'pourcentageVotes' => $pourcentageVotes,
+            'categories' => $this->categories
+        ]);
+    }
+
+    /**
+     * @Route("/terminees", name="demandes_terminees", methods={"GET"})
+     */
+    public function terminees(DemandesRepository $demandesRepository, VoteService $voteService): Response
+    {
+        $demandes = $demandesRepository->findBy(['isOuverte' => false, 'isValide' => true]);
+        $countStatus = $voteService->countVote($demandes);
+        $pourcentageVotes = $voteService->pourcentageVote($demandes);
+
+        return $this->render('demandes/index.html.twig', [
+            'demandes' => $demandes,
+            'countStatus'=> $countStatus,
+            'pourcentageVotes' => $pourcentageVotes,
+            'categories' => $this->categories
+        ]);
+    }
+// TODO : La Vue annulee
+    /**
+     * @Route("/annulees", name="demandes_annulees", methods={"GET"})
+     */
+    public function annulees(DemandesRepository $demandesRepository): Response
+    {
+        return $this->render('demandes/index.html.twig', [
+            'demandes' => $demandesRepository->findBy(['isValide' => false]),
+            'categories' => $this->categories
+        ]);
+    }
+
 
     /**
      * @Route("/new", name="demandes_new", methods={"GET","POST"})
@@ -42,8 +124,9 @@ class DemandesController extends AbstractController
         $form = $this->createForm(DemandesType::class, $demande);
 
         $form->handleRequest($request);
-
+//
         if ($form->isSubmitted() && $form->isValid()) {
+
             $demande->setCreatedAt(new DateTime());
             $now = new DateTime();
             $demande->setDeadline($now->add(new DateInterval('P1M')));
@@ -52,26 +135,45 @@ class DemandesController extends AbstractController
 
             $demande->setCreateur($this->getUser());
 
+
             $entityManager = $this->getDoctrine()->getManager();
 
             $entityManager->persist($demande);
             $entityManager->flush();
 
-            return $this->redirectToRoute('demandes_index');
+            $this->addFlash('success', 'Votre demande a été soumise pour validation');
+            return $this->redirectToRoute('demandes_ouvertes');
         }
 
         return $this->render('demandes/new.html.twig', [
             'demande' => $demande,
+            'categories' => $this->categories,
             'form' => $form->createView(),
         ]);
     }
 
     /**
-     * @Route("/id/{id}", name="demandes_show", methods={"GET"})
+     * @Route("/{id}", name="demandes_show", methods={"GET"})
      */
-    public function show(Demandes $demande): Response
+    public function show(Demandes $demande, VoteRepository $voteRepository): Response
     {
-        return $this->render('demandes/show.html.twig', [
+        $avote = false;
+        $vote = '';
+        $user = $this->getUser();
+        if($user != null) {
+            $voteurs = $voteRepository->createQueryBuilder('v')
+                ->where('v.demande = :id')
+                ->setParameter('id', $demande->getId())
+                ->innerJoin('v.citoyen', 'c')
+                ->select(['c.nom', 'c.prenom', 'v.etat'])
+                ->getQuery()
+                ->getResult()
+            ;
+        }
+
+
+
+        return $this->render('home/show.html.twig', [
             'demande' => $demande,
         ]);
     }
@@ -114,12 +216,11 @@ class DemandesController extends AbstractController
 
 	/**
 	 * @param DemandesRepository $demandesRepository
-	 * @Route("/demandeOuverte/", name="demande_active", methods={"GET"})
+	 * @Route("/json", name="demande_active", methods={"GET"})
 	 */
-    public function demandesOuverte(DemandesRepository $demandesRepository, SerializerInterface $serializer):Response
+    public function demandesOuverteJson(DemandesRepository $demandesRepository, SerializerInterface $serializer):Response
 	{
 		$demandeOuverte = $demandesRepository->findBy(['isOuverte' => true]);
-
 
 		$demandeOuverteJson = $serializer->serialize($demandeOuverte, 'json', [
 			'attributes' => [
@@ -139,4 +240,23 @@ class DemandesController extends AbstractController
 
 		return new Response($demandeOuverteJson, 200, ['content-type'=> 'application/json']);
 	}
+
+    /**
+     * @Route("/{id}/voters", name="voters")
+     * @param $id
+     */
+	public function showVoters(Demandes $demandes, VoteRepository $voteRepository) {
+        $voteurs = $voteRepository->createQueryBuilder('v')
+                            ->where('v.demande = :id')
+                            ->setParameter('id', $demandes->getId())
+                            ->innerJoin('v.citoyen', 'c')
+                            ->select(['c.nom', 'c.prenom', 'v.etat'])
+                            ->getQuery()
+                            ->getResult()
+                        ;
+        return $this->render("/demandes/voters.html.twig", [
+            'voteurs' => $voteurs,
+            'demande' =>$demandes
+        ]);
+    }
 }

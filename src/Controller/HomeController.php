@@ -11,11 +11,21 @@ use Symfony\Component\Routing\Annotation\Route;
 class HomeController extends AbstractController
 {
     /**
-     * @Route("/", name="home")
+     * @Route("/home", name="home")
      */
     public function index(DemandesRepository $demandesRepository)
     {
 
 		return $this->redirectToRoute("vote_index");
+    }
+
+    /**
+     * @Route("/showoupas", name="show")
+     */
+    public function show()
+    {
+        return $this->render('home/show.html.twig', [
+            'controller_name' => 'HomeController',
+        ]);
     }
 }
